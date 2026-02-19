@@ -1,0 +1,91 @@
+name: "Auto-Update PR Branches"
+description: "Automatically update open PR branches when the base branch advances. Prevents stalled auto-merge from strict branch protection."
+author: "Ali Watters"
+
+branding:
+  icon: "git-merge"
+  color: "blue"
+
+inputs:
+  token:
+    description: "GitHub token with contents:write and pull-requests:write permissions"
+    required: false
+    default: ${{ github.token }}
+  filter:
+    description: |
+      Which PRs to update. Options:
+        all            - Every open non-draft PR
+        auto-merge     - Only PRs with auto-merge enabled
+        label          - Only PRs with the configured label
+        auto-merge+label - PRs with auto-merge OR the label (default)
+    required: false
+    default: "all"
+  label:
+    description: "Label name for opt-in filtering (used when filter includes 'label')"
+    required: false
+    default: "automerge"
+  update-mode:
+    description: |
+      How many PRs to update per run. Options:
+        all  - Update all eligible PRs (may cause CI stampede)
+        next - Update only the next PR to merge (sequential, CI-efficient)
+    required: false
+    default: "all"
+  cancel-stale-ci:
+    description: "Cancel in-progress/queued CI runs on branches being updated (they test stale code)"
+    required: false
+    default: "true"
+  ci-workflow:
+    description: "Workflow filename for stale CI cancellation (empty = cancel all workflows on that branch)"
+    required: false
+    default: ""
+  conflict-label:
+    description: "Label to add when a PR has merge conflicts (empty = skip labeling)"
+    required: false
+    default: "needs-rebase"
+  conflict-comment:
+    description: "Post a comment on PRs with merge conflicts explaining how to resolve"
+    required: false
+    default: "true"
+  exclude-labels:
+    description: "Comma-separated list of labels that exclude a PR from being updated"
+    required: false
+    default: "wip,do-not-merge"
+  max-updates:
+    description: "Maximum number of PRs to update per run (0 = unlimited). Useful for rate limiting."
+    required: false
+    default: "0"
+
+outputs:
+  updated:
+    description: "Number of PRs whose branches were updated"
+    value: ${{ steps.update.outputs.updated }}
+  conflicts:
+    description: "Number of PRs with merge conflicts"
+    value: ${{ steps.update.outputs.conflicts }}
+  skipped:
+    description: "Number of PRs already up to date"
+    value: ${{ steps.update.outputs.skipped }}
+  summary:
+    description: "Human-readable summary of what happened"
+    value: ${{ steps.update.outputs.summary }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Update open PR branches
+      id: update
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        INPUT_FILTER: ${{ inputs.filter }}
+        INPUT_LABEL: ${{ inputs.label }}
+        INPUT_UPDATE_MODE: ${{ inputs.update-mode }}
+        INPUT_CANCEL_STALE_CI: ${{ inputs.cancel-stale-ci }}
+        INPUT_CI_WORKFLOW: ${{ inputs.ci-workflow }}
+        INPUT_CONFLICT_LABEL: ${{ inputs.conflict-label }}
+        INPUT_CONFLICT_COMMENT: ${{ inputs.conflict-comment }}
+        INPUT_EXCLUDE_LABELS: ${{ inputs.exclude-labels }}
+        INPUT_MAX_UPDATES: ${{ inputs.max-updates }}
+      run: ${{ github.action_path }}/update-branches.sh
