@@ -55,6 +55,18 @@ inputs:
     description: "Maximum number of PRs to update per run (0 = unlimited). Useful for rate limiting."
     required: false
     default: "0"
+  priority-labels:
+    description: |
+      Comma-separated label-to-priority mappings. Format: label=weight (higher weight = updated first).
+      Default priorities: critical=100, high=75, medium=50, low=25.
+      PRs without a priority label get weight 0.
+      Repos can override via .github/auto-update.yml config file (see README).
+    required: false
+    default: ""
+  config-file:
+    description: "Path to repo config file for label mappings and settings (requires checkout step)"
+    required: false
+    default: ".github/auto-update.yml"
 
 outputs:
   updated:
@@ -88,4 +100,7 @@ runs:
         INPUT_CONFLICT_COMMENT: ${{ inputs.conflict-comment }}
         INPUT_EXCLUDE_LABELS: ${{ inputs.exclude-labels }}
         INPUT_MAX_UPDATES: ${{ inputs.max-updates }}
+        INPUT_PRIORITY_LABELS: ${{ inputs.priority-labels }}
+        INPUT_CONFIG_FILE: ${{ inputs.config-file }}
+        ACTION_PATH: ${{ github.action_path }}
       run: ${{ github.action_path }}/update-branches.sh

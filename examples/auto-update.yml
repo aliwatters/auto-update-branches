@@ -1,0 +1,36 @@
+# .github/auto-update.yml
+# Repository-specific configuration for auto-update-branches action.
+# This file maps your repo's labels to update priority weights.
+#
+# How it works:
+#   When the action updates PR branches, PRs with higher priority labels
+#   get updated first. This means high-priority PRs run CI sooner and
+#   merge faster (especially in "next" mode).
+#
+# Priority weights:
+#   Higher number = updated first. PRs without priority labels get weight 0.
+#   If a PR has multiple priority labels, the highest weight wins.
+
+# Map your repo's labels to priority weights.
+# The action has built-in defaults:
+#   priority:critical = 100
+#   priority:high = 75
+#   priority:medium = 50
+#   priority:low = 25
+#
+# Add your own labels here to override or extend:
+priority-labels:
+  # Map existing repo labels to priorities
+  # (your labels on the left, weight on the right)
+  P0: 100
+  P1: 75
+  P2: 50
+  P3: 25
+  urgent: 100
+  hotfix: 100
+  bug: 60
+  feature: 40
+  chore: 20
+
+  # You can also override the built-in defaults
+  # priority:critical: 200

@@ -80,6 +80,8 @@ That's it. Every open PR targeting `main` will be updated when `main` advances.
 | `conflict-comment` | `true` | Comment on PRs with conflicts |
 | `exclude-labels` | `wip,do-not-merge` | Comma-separated labels that exclude PRs |
 | `max-updates` | `0` | Max PRs to update per run (0 = unlimited) |
+| `priority-labels` | `""` | Label-to-priority mappings (see [Priority Labels](#priority-labels)) |
+| `config-file` | `.github/auto-update.yml` | Path to repo config file for label mappings |
 
 ## Outputs
 
@@ -89,6 +91,62 @@ That's it. Every open PR targeting `main` will be updated when `main` advances.
 | `conflicts` | Number of PRs with merge conflicts |
 | `skipped` | Number of PRs already up to date |
 | `summary` | Human-readable summary |
+
+## Priority Labels
+
+PRs are updated in priority order — highest priority first. This matters most in `next` mode where only one PR is updated per run: the highest-priority stale PR gets updated and merges first.
+
+### Built-in defaults
+
+| Label | Priority |
+|-------|----------|
+| `priority:critical` | 100 |
+| `priority:high` | 75 |
+| `priority:medium` | 50 |
+| `priority:low` | 25 |
+| *(no priority label)* | 0 |
+
+If a PR has multiple priority labels, the highest weight wins.
+
+### Custom mappings via action input
+
+Map your repo's existing labels directly in the workflow:
+
+```yaml
+- uses: aliwatters/auto-update-branches@v1
+  with:
+    priority-labels: "P0=100,P1=75,hotfix=100,bug=60"
+```
+
+### Custom mappings via repo config file
+
+For more complex setups, create `.github/auto-update.yml` in your repo:
+
+```yaml
+# .github/auto-update.yml
+priority-labels:
+  P0: 100
+  P1: 75
+  P2: 50
+  P3: 25
+  urgent: 100
+  hotfix: 100
+  bug: 60
+  feature: 40
+  chore: 20
+```
+
+The config file takes precedence over action inputs, which take precedence over built-in defaults. This lets each repo map its own label conventions without changing the workflow file.
+
+> **Note**: Reading the config file requires a checkout step before the action:
+> ```yaml
+> steps:
+>   - uses: actions/checkout@v4
+>     with:
+>       sparse-checkout: .github/auto-update.yml
+>       sparse-checkout-cone-mode: false
+>   - uses: aliwatters/auto-update-branches@v1
+> ```
 
 ## Update Modes
 
@@ -125,6 +183,20 @@ Updates only the single PR that would merge next (the first eligible PR that is 
     ci-workflow: "ci.yml"
 ```
 
+### Priority-based sequential merge
+```yaml
+# Update the highest-priority stale PR first
+# PRs labeled "P0" or "hotfix" get updated before "P2" or unlabeled PRs
+- uses: actions/checkout@v4
+  with:
+    sparse-checkout: .github/auto-update.yml
+    sparse-checkout-cone-mode: false
+- uses: aliwatters/auto-update-branches@v1
+  with:
+    update-mode: "next"
+    priority-labels: "P0=100,P1=75,hotfix=100,bug=60"
+```
+
 ### Rate-limited updates
 ```yaml
 - uses: aliwatters/auto-update-branches@v1
@@ -135,41 +207,56 @@ Updates only the single PR that would merge next (the first eligible PR that is 
 
 ## Roadmap
 
-This action follows a progressive architecture — start simple, add capabilities as needed.
+This action follows a **progressive architecture** — start with zero infrastructure, add capabilities as your team needs them. Each phase is a strict superset of the one before.
 
 ### Phase 1: Stateless Action (current)
-Pure GitHub Action. No external dependencies. Reacts to `push` events, updates branches via GitHub API. Covers 80% of use cases.
+Pure GitHub Action. No external dependencies. Labels drive priority.
 
 - [x] Smart filtering (all / auto-merge / label / auto-merge+label)
 - [x] Stale CI cancellation
 - [x] Conflict detection with labeling and comments
 - [x] `next` mode for sequential merge pipeline
-- [x] Exclude labels
-- [x] Rate limiting via `max-updates`
-- [x] Job summary output
+- [x] Exclude labels and rate limiting
+- [x] **Label-based priority ordering** with repo config
+- [x] Job summary with priority table
 
-### Phase 2: Free State Management
-GitHub-native state storage for ordering and analytics. Zero external dependencies.
+### Phase 2: Label + Free State
+GitHub-native state for retry tracking and analytics. Still zero external dependencies — state lives in labels, PR comments, and GitHub Actions artifacts/cache.
 
-- [ ] **Gist-based state**: Store queue state in a private gist (free, API-accessible, no repo pollution)
-- [ ] Priority queue ordering (labels or config-based)
-- [ ] Retry tracking with backoff (don't keep updating a PR that always conflicts)
-- [ ] Update history / analytics via gist
-- [ ] Cross-repo coordination (single gist tracks multiple repos)
+- [ ] **Retry tracking via labels**: `auto-update/retry-1`, `auto-update/retry-2`, `auto-update/failed` — backoff on repeated failures, stop updating PRs that always conflict
+- [ ] **Analytics via job summary history**: Track update counts, conflict rates, merge latency over time using Actions artifacts
+- [ ] **Stale conflict detection**: Auto-remove `needs-rebase` label when conflicts are resolved
+- [ ] **Cross-repo summary**: Workflow that aggregates update stats across repos via GitHub API
 
 ### Phase 3: Go Sidecar (Optimal)
 Optional always-on process for teams that need merge queues, instant webhook response, and full analytics.
 
-- [ ] Single Go binary with embedded SQLite
-- [ ] GitHub App webhook receiver (instant, not polling)
-- [ ] Merge queue with priority, batching, and speculative checks
-- [ ] Litestream replication to S3 for durability (~$0.50/mo)
-- [ ] Web dashboard for queue visibility
+- [ ] Single Go binary with embedded SQLite or managed Postgres (`DATABASE_URL` configures both)
+- [ ] GitHub App webhook receiver (instant response, not push-triggered polling)
+- [ ] Merge queue with priority, batching, and speculative CI checks
+- [ ] SQLite + Litestream→S3 for self-hosted durability (~$0.50/mo)
+- [ ] Managed Postgres option (DigitalOcean ~$15/mo) for HA, multi-instance, concurrent access
+- [ ] Web dashboard for queue visibility and analytics
 - [ ] Docker image + Helm chart for easy deployment
-- [ ] Backwards compatible: works alongside the Action, enhances it
+- [ ] Backwards compatible: enhances the Action, doesn't replace it
+
+### Why Managed DB? (Phase 3)
+
+SQLite is great for single-instance self-hosted. A managed Postgres ($15/mo on DigitalOcean) unlocks:
+- **Multi-instance HA**: Run N sidecar replicas, they all share state
+- **Dashboard without sidecar**: Any web app can query the DB directly
+- **Cross-repo analytics**: SQL queries across all repos (conflict rates, merge latency, queue depth)
+- **Webhook reliability**: Store incoming events in a table, process async, never lose events
+- **External integrations**: Slack bots, Grafana, CLI tools all read from the same DB
 
 ### Long-term Vision
 An open-source, progressively-enhanced alternative to Mergify. Start with zero infrastructure (just the Action), grow into a full merge queue as your team needs it.
+
+```
+Phase 1: Action only          → Labels drive priority, zero deps
+Phase 2: Action + label state → Retry tracking, analytics, free
+Phase 3: Action + Go sidecar  → Merge queue, webhooks, dashboard
+```
 
 ## How It Works
 

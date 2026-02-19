@@ -33,6 +33,84 @@ csv_to_jq_any() {
 }
 
 # ---------------------------------------------------------------------------
+# Priority label mapping
+# ---------------------------------------------------------------------------
+
+# Build a JSON object mapping label names to priority weights.
+# Sources (in order of precedence):
+#   1. Repo config file (.github/auto-update.yml)
+#   2. Action input (priority-labels)
+#   3. Built-in defaults
+build_priority_map() {
+  local map='{}'
+
+  # Built-in defaults
+  map=$(echo "$map" | jq '. + {
+    "priority:critical": 100,
+    "priority:high": 75,
+    "priority:medium": 50,
+    "priority:low": 25
+  }')
+
+  # Parse action input: "urgent=200,hotfix=150"
+  if [[ -n "${INPUT_PRIORITY_LABELS:-}" ]]; then
+    IFS=',' read -ra PAIRS <<< "$INPUT_PRIORITY_LABELS"
+    for pair in "${PAIRS[@]}"; do
+      pair=$(echo "$pair" | xargs)
+      label="${pair%%=*}"
+      weight="${pair##*=}"
+      if [[ -n "$label" && -n "$weight" ]]; then
+        map=$(echo "$map" | jq --arg l "$label" --argjson w "$weight" '. + {($l): $w}')
+      fi
+    done
+  fi
+
+  # Parse repo config file (highest precedence)
+  if [[ -f "${INPUT_CONFIG_FILE:-}" ]]; then
+    echo "Loading config from ${INPUT_CONFIG_FILE}"
+    # Extract priority-labels section from YAML config
+    # Supports format:
+    #   priority-labels:
+    #     critical: 100
+    #     high: 75
+    #     P0: 100
+    if command -v python3 &>/dev/null; then
+      CONFIG_PRIORITIES=$(python3 -c "
+import yaml, json, sys
+try:
+    with open('${INPUT_CONFIG_FILE}') as f:
+        config = yaml.safe_load(f) or {}
+    labels = config.get('priority-labels', {})
+    if isinstance(labels, dict):
+        print(json.dumps(labels))
+    else:
+        print('{}')
+except Exception:
+    print('{}')
+" 2>/dev/null || echo '{}')
+      if [[ "$CONFIG_PRIORITIES" != '{}' ]]; then
+        map=$(echo "$map" "$CONFIG_PRIORITIES" | jq -s '.[0] * .[1]')
+        echo "Config overrides: $CONFIG_PRIORITIES"
+      fi
+    fi
+  fi
+
+  echo "$map"
+}
+
+# Calculate priority weight for a PR based on its labels
+# Args: $1 = JSON array of label names, $2 = priority map JSON
+calc_priority() {
+  local labels="$1"
+  local priority_map="$2"
+  echo "$labels" "$priority_map" | jq -s '
+    .[1] as $map |
+    [.[0][] | . as $label | $map[$label] // 0] |
+    max // 0
+  '
+}
+
+# ---------------------------------------------------------------------------
 # Gather open PRs
 # ---------------------------------------------------------------------------
 
@@ -89,6 +167,27 @@ if [[ "$ELIGIBLE_COUNT" == "0" ]]; then
   echo "::endgroup::"
   exit 0
 fi
+
+echo "::endgroup::"
+
+# ---------------------------------------------------------------------------
+# Priority sorting
+# ---------------------------------------------------------------------------
+
+echo "::group::Priority ordering"
+
+PRIORITY_MAP=$(build_priority_map)
+echo "Priority map: $PRIORITY_MAP"
+
+# Add priority weight to each PR and sort descending (highest priority first)
+ELIGIBLE=$(echo "$ELIGIBLE" | jq --argjson pmap "$PRIORITY_MAP" '
+  [.[] | . + {
+    priority: ([.labels[] | . as $l | $pmap[$l] // 0] | max // 0)
+  }] | sort_by(-.priority, .number)
+')
+
+echo "Update order (priority desc):"
+echo "$ELIGIBLE" | jq -r '.[] | "  #\(.number) priority=\(.priority) [\(.branch)]"'
 
 echo "::endgroup::"
 
@@ -225,13 +324,24 @@ echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
 echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
 
 # Set job summary
-cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-## Auto-Update PR Branches
+{
+  echo "## Auto-Update PR Branches"
+  echo ""
+  echo "| Metric | Count |"
+  echo "|--------|-------|"
+  echo "| Updated | $UPDATED |"
+  echo "| Conflicts | $CONFLICTS |"
+  echo "| Skipped (up to date) | $SKIPPED |"
+  echo "| Errors | $ERRORS |"
 
-| Metric | Count |
-|--------|-------|
-| Updated | $UPDATED |
-| Conflicts | $CONFLICTS |
-| Skipped (up to date) | $SKIPPED |
-| Errors | $ERRORS |
-EOF
+  # Show priority ordering if any PRs had non-zero priority
+  HAS_PRIORITY=$(echo "$ELIGIBLE" | jq '[.[] | select(.priority > 0)] | length')
+  if [[ "$HAS_PRIORITY" -gt 0 ]]; then
+    echo ""
+    echo "### Priority Order"
+    echo ""
+    echo "| PR | Priority | Branch |"
+    echo "|----|----------|--------|"
+    echo "$ELIGIBLE" | jq -r '.[] | "| #\(.number) | \(.priority) | `\(.branch)` |"'
+  fi
+} >> "$GITHUB_STEP_SUMMARY"
