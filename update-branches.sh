@@ -160,10 +160,12 @@ echo "$ELIGIBLE" | jq -r '.[] | "  #\(.number) [\(.branch)] auto_merge=\(.auto_m
 
 if [[ "$ELIGIBLE_COUNT" == "0" ]]; then
   echo "No eligible PRs to update."
-  echo "updated=0" >> "$GITHUB_OUTPUT"
-  echo "conflicts=0" >> "$GITHUB_OUTPUT"
-  echo "skipped=0" >> "$GITHUB_OUTPUT"
-  echo "summary=No eligible PRs to update" >> "$GITHUB_OUTPUT"
+  {
+    echo "updated=0"
+    echo "conflicts=0"
+    echo "skipped=0"
+    echo "summary=No eligible PRs to update"
+  } >> "$GITHUB_OUTPUT"
   echo "::endgroup::"
   exit 0
 fi
@@ -318,10 +320,12 @@ fi
 echo ""
 echo "Summary: $SUMMARY"
 
-echo "updated=$UPDATED" >> "$GITHUB_OUTPUT"
-echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
-echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
-echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+{
+  echo "updated=$UPDATED"
+  echo "conflicts=$CONFLICTS"
+  echo "skipped=$SKIPPED"
+  echo "summary=$SUMMARY"
+} >> "$GITHUB_OUTPUT"
 
 # Set job summary
 {
