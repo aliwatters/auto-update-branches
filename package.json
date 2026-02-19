@@ -1,0 +1,29 @@
+{
+  "name": "auto-update-branches",
+  "version": "1.1.0",
+  "description": "Automatically update PR branches when the base branch advances",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "ncc build src/main.ts -o dist --source-map --license licenses.txt",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aliwatters/auto-update-branches"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^6.0.0",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.17.0",
+    "@vercel/ncc": "^0.38.3",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
