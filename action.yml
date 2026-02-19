@@ -83,24 +83,5 @@ outputs:
     value: ${{ steps.update.outputs.summary }}
 
 runs:
-  using: "composite"
-  steps:
-    - name: Update open PR branches
-      id: update
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.token }}
-        GH_REPO: ${{ github.repository }}
-        INPUT_FILTER: ${{ inputs.filter }}
-        INPUT_LABEL: ${{ inputs.label }}
-        INPUT_UPDATE_MODE: ${{ inputs.update-mode }}
-        INPUT_CANCEL_STALE_CI: ${{ inputs.cancel-stale-ci }}
-        INPUT_CI_WORKFLOW: ${{ inputs.ci-workflow }}
-        INPUT_CONFLICT_LABEL: ${{ inputs.conflict-label }}
-        INPUT_CONFLICT_COMMENT: ${{ inputs.conflict-comment }}
-        INPUT_EXCLUDE_LABELS: ${{ inputs.exclude-labels }}
-        INPUT_MAX_UPDATES: ${{ inputs.max-updates }}
-        INPUT_PRIORITY_LABELS: ${{ inputs.priority-labels }}
-        INPUT_CONFIG_FILE: ${{ inputs.config-file }}
-        ACTION_PATH: ${{ github.action_path }}
-      run: ${{ github.action_path }}/update-branches.sh
+  using: "node20"
+  main: "dist/index.js"
