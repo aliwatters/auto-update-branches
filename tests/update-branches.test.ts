@@ -208,8 +208,9 @@ describe("updateBranches", () => {
     expect(octokit.rest.pulls.get).toHaveBeenCalledTimes(4);
   });
 
-  it("gives up after max retries and skips PR", async () => {
+  it("attempts update after max retries when state stays UNKNOWN", async () => {
     // All 4 calls return unknown (1 initial + 3 retries)
+    // UNKNOWN is ambiguous — may be behind, so we attempt the update
     const octokit = makeOctokit(["unknown", "unknown", "unknown", "unknown"]);
     const prs = [makePrioritizedPR(1, 0)];
 
@@ -218,11 +219,127 @@ describe("updateBranches", () => {
 
     const result = await promise;
 
-    expect(result.skipped).toBe(1);
-    expect(result.updated).toBe(0);
+    expect(result.updated).toBe(1);
     expect(octokit.rest.pulls.get).toHaveBeenCalledTimes(4);
+    expect(octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
     expect(core.warning).toHaveBeenCalledWith(
       expect.stringContaining("still UNKNOWN after 3 retries")
     );
+  });
+
+  it("handles DIRTY state as conflict", async () => {
+    const octokit = makeOctokit(["dirty"]);
+    const prs = [makePrioritizedPR(1, 0)];
+
+    const result = await updateBranches(octokit, "owner", "repo", prs, defaultInputs);
+
+    expect(result.conflicts).toBe(1);
+    expect(result.updated).toBe(0);
+    expect(octokit.rest.pulls.updateBranch).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: ["needs-rebase"] })
+    );
+    expect(octokit.rest.issues.createComment).toHaveBeenCalled();
+  });
+
+  it("attempts update for BLOCKED state (may also be behind)", async () => {
+    const octokit = makeOctokit(["blocked"]);
+    const prs = [makePrioritizedPR(1, 0)];
+
+    const result = await updateBranches(octokit, "owner", "repo", prs, defaultInputs);
+
+    expect(result.updated).toBe(1);
+    expect(octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
+    expect(core.info).toHaveBeenCalledWith(
+      expect.stringContaining("BLOCKED (may also be behind)")
+    );
+  });
+
+  it("attempts update for UNSTABLE state", async () => {
+    const octokit = makeOctokit(["unstable"]);
+    const prs = [makePrioritizedPR(1, 0)];
+
+    const result = await updateBranches(octokit, "owner", "repo", prs, defaultInputs);
+
+    expect(result.updated).toBe(1);
+    expect(octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
+  });
+
+  it("attempts update for HAS_HOOKS state", async () => {
+    const octokit = makeOctokit(["has_hooks"]);
+    const prs = [makePrioritizedPR(1, 0)];
+
+    const result = await updateBranches(octokit, "owner", "repo", prs, defaultInputs);
+
+    expect(result.updated).toBe(1);
+    expect(octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts up_to_date API response as skipped", async () => {
+    // State is BLOCKED (ambiguous) but API says already up to date
+    const octokit = makeOctokit(["blocked"]);
+    octokit.rest.pulls.updateBranch.mockRejectedValue({
+      status: 422,
+      message: "merge commit is already up to date",
+    });
+    const prs = [makePrioritizedPR(1, 0)];
+
+    const result = await updateBranches(octokit, "owner", "repo", prs, defaultInputs);
+
+    expect(result.skipped).toBe(1);
+    expect(result.updated).toBe(0);
+    expect(result.errors).toBe(0);
+  });
+
+  it("counts conflict from API response separately from DIRTY", async () => {
+    // State is BEHIND but API discovers conflict during update
+    const octokit = makeOctokit(["behind"]);
+    octokit.rest.pulls.updateBranch.mockRejectedValue({
+      status: 422,
+      message: "Merge conflict",
+    });
+    const prs = [makePrioritizedPR(1, 0)];
+
+    const result = await updateBranches(octokit, "owner", "repo", prs, defaultInputs);
+
+    expect(result.conflicts).toBe(1);
+    expect(result.updated).toBe(0);
+    expect(octokit.rest.issues.addLabels).toHaveBeenCalled();
+  });
+
+  it("handles SHA mismatch gracefully", async () => {
+    const octokit = makeOctokit(["behind"]);
+    octokit.rest.pulls.updateBranch.mockRejectedValue({
+      status: 409,
+      message: "Head branch was modified",
+    });
+    const prs = [makePrioritizedPR(1, 0)];
+
+    const result = await updateBranches(octokit, "owner", "repo", prs, defaultInputs);
+
+    expect(result.skipped).toBe(1);
+    expect(result.errors).toBe(0);
+  });
+
+  it("stops after first PR in next mode", async () => {
+    const octokit = makeOctokit(["behind"]);
+    const prs = [makePrioritizedPR(1, 0), makePrioritizedPR(2, 0)];
+    const inputs = { ...defaultInputs, updateMode: "next" as const };
+
+    const result = await updateBranches(octokit, "owner", "repo", prs, inputs);
+
+    expect(result.updated).toBe(1);
+    expect(octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
+  });
+
+  it("respects max-updates limit", async () => {
+    const octokit = makeOctokit(["behind"]);
+    const prs = [makePrioritizedPR(1, 0), makePrioritizedPR(2, 0), makePrioritizedPR(3, 0)];
+    const inputs = { ...defaultInputs, maxUpdates: 2 };
+
+    const result = await updateBranches(octokit, "owner", "repo", prs, inputs);
+
+    expect(result.updated).toBe(2);
+    expect(octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(2);
   });
 });

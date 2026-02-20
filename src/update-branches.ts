@@ -164,7 +164,7 @@ async function updatePRBranch(
   repo: string,
   prNumber: number,
   expectedSha: string
-): Promise<"updated" | "conflict" | "sha_mismatch" | "error"> {
+): Promise<"updated" | "conflict" | "up_to_date" | "sha_mismatch" | "error"> {
   try {
     await octokit.rest.pulls.updateBranch({
       owner,
@@ -175,11 +175,14 @@ async function updatePRBranch(
     return "updated";
   } catch (error: unknown) {
     const status = (error as { status?: number }).status ?? 0;
+    const message = String((error as { message?: string }).message ?? "");
 
     if (status === 422) {
-      const message = String((error as { message?: string }).message ?? "");
       if (/merge conflict/i.test(message)) {
         return "conflict";
+      }
+      if (/already up.to.date/i.test(message) || /no update/i.test(message)) {
+        return "up_to_date";
       }
       return "error";
     }
@@ -216,8 +219,9 @@ export async function updateBranches(
     const mergeState = await getMergeState(octokit, owner, repo, pr.number);
     core.info(`Merge state: ${mergeState}`);
 
-    if (mergeState !== "BEHIND") {
-      core.info(`Already up to date (${mergeState})`);
+    // CLEAN: definitely up to date, skip
+    if (mergeState === "CLEAN") {
+      core.info("Branch is up to date");
       result.skipped++;
       core.endGroup();
 
@@ -228,7 +232,23 @@ export async function updateBranches(
       continue;
     }
 
-    core.info("Branch is behind, updating...");
+    // DIRTY: has merge conflicts — label and notify, don't attempt update
+    if (mergeState === "DIRTY") {
+      core.info("Branch has merge conflicts");
+      result.conflicts++;
+      await handleConflict(octokit, owner, repo, pr.number, inputs);
+      core.endGroup();
+      continue;
+    }
+
+    // BEHIND: definitely needs update
+    // BLOCKED/UNSTABLE/HAS_HOOKS/UNKNOWN: may also be behind — attempt update
+    // and let the API tell us if there's nothing to do
+    if (mergeState !== "BEHIND") {
+      core.info(`State is ${mergeState} (may also be behind), attempting update...`);
+    } else {
+      core.info("Branch is behind, updating...");
+    }
 
     // Cancel stale CI
     if (inputs.cancelStaleCi) {
@@ -256,6 +276,10 @@ export async function updateBranches(
         core.info("Merge conflict detected");
         result.conflicts++;
         await handleConflict(octokit, owner, repo, pr.number, inputs);
+        break;
+      case "up_to_date":
+        core.info("Branch is already up to date");
+        result.skipped++;
         break;
       case "sha_mismatch":
         core.info("Branch changed during update (SHA mismatch). Will retry on next push.");
