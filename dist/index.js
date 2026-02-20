@@ -34131,6 +34131,7 @@ const filter_1 = __nccwpck_require__(9037);
 const filter_2 = __nccwpck_require__(9037);
 const priority_1 = __nccwpck_require__(1759);
 const update_branches_1 = __nccwpck_require__(3315);
+const test_branch_1 = __nccwpck_require__(2564);
 function getInputs() {
     const excludeStr = core.getInput("exclude-labels");
     return {
@@ -34148,6 +34149,8 @@ function getInputs() {
         maxUpdates: parseInt(core.getInput("max-updates"), 10) || 0,
         priorityLabels: core.getInput("priority-labels"),
         configFile: core.getInput("config-file"),
+        testBranchPrefix: core.getInput("test-branch-prefix") || "merge-test",
+        statusContext: core.getInput("status-context") || "merge-test",
     };
 }
 async function run() {
@@ -34196,8 +34199,20 @@ async function run() {
             core.info(`  #${pr.number} priority=${pr.priority} [${pr.branch}]`);
         }
         core.endGroup();
-        // Update branches
-        const result = await (0, update_branches_1.updateBranches)(octokit, owner, repo, sorted, inputs);
+        // Process PRs based on mode
+        let result;
+        if (inputs.updateMode === "test-branch") {
+            result = await (0, test_branch_1.processTestBranches)(octokit, owner, repo, sorted, inputs);
+            // Clean up test branches for closed/merged PRs
+            const openPrNumbers = new Set(sorted.map((pr) => pr.number));
+            const cleaned = await (0, test_branch_1.cleanupTestBranches)(octokit, owner, repo, openPrNumbers, inputs.testBranchPrefix);
+            if (cleaned > 0) {
+                core.info(`Cleaned up ${cleaned} stale test branch(es)`);
+            }
+        }
+        else {
+            result = await (0, update_branches_1.updateBranches)(octokit, owner, repo, sorted, inputs);
+        }
         // Summary
         (0, update_branches_1.writeSummary)(result, sorted);
     }
@@ -34354,6 +34369,365 @@ function prioritizeAndSort(prs, map) {
             return b.priority - a.priority;
         return a.number - b.number;
     });
+}
+
+
+/***/ }),
+
+/***/ 2564:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.processTestBranches = processTestBranches;
+exports.cleanupTestBranches = cleanupTestBranches;
+const core = __importStar(__nccwpck_require__(7484));
+/**
+ * Get the SHA of the base branch (main).
+ */
+async function getBaseBranchSha(octokit, owner, repo) {
+    const { data } = await octokit.rest.git.getRef({
+        owner,
+        repo,
+        ref: "heads/main",
+    });
+    return data.object.sha;
+}
+/**
+ * Check if a test branch ref exists and return its SHA if so.
+ */
+async function getTestBranchSha(octokit, owner, repo, testBranch) {
+    try {
+        const { data } = await octokit.rest.git.getRef({
+            owner,
+            repo,
+            ref: `heads/${testBranch}`,
+        });
+        return data.object.sha;
+    }
+    catch (error) {
+        const status = error.status ?? 0;
+        if (status === 404)
+            return null;
+        throw error;
+    }
+}
+/**
+ * Create a merge commit combining main and the PR branch.
+ * Returns the SHA of the merge commit, or null if there's a conflict.
+ */
+async function createMergeCommit(octokit, owner, repo, baseSha, headSha, prNumber) {
+    try {
+        const { data } = await octokit.rest.git.createTree({
+            owner,
+            repo,
+            base_tree: baseSha,
+            tree: [],
+        });
+        // Use the merge API to create a proper merge
+        const { data: mergeData } = await octokit.rest.repos.merge({
+            owner,
+            repo,
+            base: `refs/heads/__merge-test-temp-${prNumber}`,
+            head: headSha.substring(0, 7),
+        });
+        return mergeData.sha;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Create or update a test branch ref.
+ */
+async function createOrUpdateTestBranch(octokit, owner, repo, testBranch, baseSha, prBranch, prNumber) {
+    try {
+        // Use the merge API: merge the PR branch into a test branch based on main.
+        // First, create or reset the test branch to point at main's HEAD.
+        const existingSha = await getTestBranchSha(octokit, owner, repo, testBranch);
+        if (existingSha) {
+            // Update existing ref to main HEAD
+            await octokit.rest.git.updateRef({
+                owner,
+                repo,
+                ref: `heads/${testBranch}`,
+                sha: baseSha,
+                force: true,
+            });
+        }
+        else {
+            // Create new ref at main HEAD
+            await octokit.rest.git.createRef({
+                owner,
+                repo,
+                ref: `refs/heads/${testBranch}`,
+                sha: baseSha,
+            });
+        }
+        // Now merge the PR branch into the test branch
+        await octokit.rest.repos.merge({
+            owner,
+            repo,
+            base: testBranch,
+            head: prBranch,
+            commit_message: `Merge-test: PR #${prNumber} with latest main`,
+        });
+        return "created";
+    }
+    catch (error) {
+        const status = error.status ?? 0;
+        const message = String(error.message ?? "");
+        if (status === 409 || /merge conflict/i.test(message) || /conflict/i.test(message)) {
+            // Clean up the test branch on conflict
+            await deleteTestBranch(octokit, owner, repo, testBranch);
+            return "conflict";
+        }
+        // Clean up on error too
+        try {
+            await deleteTestBranch(octokit, owner, repo, testBranch);
+        }
+        catch {
+            // ignore cleanup errors
+        }
+        return "error";
+    }
+}
+/**
+ * Post a commit status on the PR's head commit.
+ */
+async function postCommitStatus(octokit, owner, repo, sha, state, context, description, targetUrl) {
+    await octokit.rest.repos.createCommitStatus({
+        owner,
+        repo,
+        sha,
+        state,
+        context,
+        description,
+        target_url: targetUrl,
+    });
+}
+/**
+ * Delete a test branch ref.
+ */
+async function deleteTestBranch(octokit, owner, repo, testBranch) {
+    try {
+        await octokit.rest.git.deleteRef({
+            owner,
+            repo,
+            ref: `heads/${testBranch}`,
+        });
+    }
+    catch (error) {
+        const status = error.status ?? 0;
+        if (status !== 404 && status !== 422) {
+            core.warning(`Failed to delete test branch ${testBranch}: ${error}`);
+        }
+    }
+}
+/**
+ * Check the current commit status for a given context on a SHA.
+ */
+async function getCommitStatus(octokit, owner, repo, sha, context) {
+    try {
+        const { data } = await octokit.rest.repos.listCommitStatusesForRef({
+            owner,
+            repo,
+            ref: sha,
+            per_page: 100,
+        });
+        // Statuses are returned newest first; find the latest for our context
+        const status = data.find((s) => s.context === context);
+        return status ? status.state : null;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Check if the test branch's CI has completed by looking at workflow runs.
+ */
+async function checkTestBranchCI(octokit, owner, repo, testBranch, ciWorkflow) {
+    try {
+        const params = {
+            owner,
+            repo,
+            branch: testBranch,
+            per_page: 5,
+        };
+        let runs;
+        if (ciWorkflow) {
+            runs = await octokit.rest.actions.listWorkflowRuns({
+                ...params,
+                workflow_id: ciWorkflow,
+            });
+        }
+        else {
+            runs = await octokit.rest.actions.listWorkflowRunsForRepo(params);
+        }
+        if (runs.data.workflow_runs.length === 0) {
+            return "not_found";
+        }
+        const latest = runs.data.workflow_runs[0];
+        if (latest.status === "completed") {
+            return latest.conclusion === "success" ? "success" : "failure";
+        }
+        return "pending";
+    }
+    catch {
+        return "not_found";
+    }
+}
+/**
+ * Handle a PR that has merge conflicts in test-branch mode.
+ */
+async function handleConflict(octokit, owner, repo, prNumber, prSha, inputs) {
+    // Post failure status
+    await postCommitStatus(octokit, owner, repo, prSha, "failure", inputs.statusContext, "Merge conflict with main");
+    // Add conflict label
+    if (inputs.conflictLabel) {
+        try {
+            await octokit.rest.issues.addLabels({
+                owner, repo, issue_number: prNumber,
+                labels: [inputs.conflictLabel],
+            });
+        }
+        catch (error) {
+            core.warning(`Failed to add conflict label to PR #${prNumber}: ${error}`);
+        }
+    }
+}
+/**
+ * Process PRs in test-branch mode.
+ *
+ * For each eligible PR:
+ * 1. Check if a test branch already exists and CI has completed
+ * 2. If CI passed, post success status on PR head commit
+ * 3. If no test branch or main has advanced, create/update test branch
+ * 4. Post pending status on PR head commit
+ */
+async function processTestBranches(octokit, owner, repo, prs, inputs) {
+    const result = { updated: 0, conflicts: 0, skipped: 0, errors: 0 };
+    const baseSha = await getBaseBranchSha(octokit, owner, repo);
+    for (const pr of prs) {
+        core.startGroup(`PR #${pr.number} (priority=${pr.priority})`);
+        const testBranch = `${inputs.testBranchPrefix}/pr-${pr.number}`;
+        // Check if test branch already exists
+        const testBranchSha = await getTestBranchSha(octokit, owner, repo, testBranch);
+        if (testBranchSha) {
+            // Test branch exists — check if CI has completed on it
+            const ciStatus = await checkTestBranchCI(octokit, owner, repo, testBranch, inputs.ciWorkflow);
+            if (ciStatus === "success") {
+                // CI passed on test branch — post success status on PR
+                core.info(`Test branch CI passed — posting success status on PR #${pr.number}`);
+                await postCommitStatus(octokit, owner, repo, pr.sha, "success", inputs.statusContext, `Merge test passed (main@${baseSha.substring(0, 7)})`);
+                result.skipped++;
+                core.endGroup();
+                continue;
+            }
+            if (ciStatus === "failure") {
+                // CI failed — post failure status, will need investigation
+                core.info(`Test branch CI failed — posting failure status on PR #${pr.number}`);
+                await postCommitStatus(octokit, owner, repo, pr.sha, "failure", inputs.statusContext, "Merge test failed — CI did not pass on test branch");
+                result.errors++;
+                core.endGroup();
+                continue;
+            }
+            if (ciStatus === "pending") {
+                // CI still running — don't interrupt
+                core.info(`Test branch CI still running for PR #${pr.number}, skipping`);
+                result.skipped++;
+                core.endGroup();
+                continue;
+            }
+            // CI not found — test branch may be stale (main advanced). Recreate it.
+            core.info(`Test branch exists but no CI found — recreating for PR #${pr.number}`);
+        }
+        // Create or update test branch (main + PR)
+        core.info(`Creating test branch ${testBranch} for PR #${pr.number}`);
+        const outcome = await createOrUpdateTestBranch(octokit, owner, repo, testBranch, baseSha, pr.branch, pr.number);
+        switch (outcome) {
+            case "created":
+                core.info(`Test branch ${testBranch} created successfully`);
+                await postCommitStatus(octokit, owner, repo, pr.sha, "pending", inputs.statusContext, `Merge test in progress (main@${baseSha.substring(0, 7)})`);
+                result.updated++;
+                break;
+            case "conflict":
+                core.info(`PR #${pr.number} has merge conflicts with main`);
+                result.conflicts++;
+                await handleConflict(octokit, owner, repo, pr.number, pr.sha, inputs);
+                break;
+            case "error":
+                core.warning(`Failed to create test branch for PR #${pr.number}`);
+                result.errors++;
+                break;
+        }
+        core.endGroup();
+    }
+    return result;
+}
+/**
+ * Clean up test branches for PRs that are no longer open.
+ */
+async function cleanupTestBranches(octokit, owner, repo, openPrNumbers, prefix) {
+    let cleaned = 0;
+    try {
+        // List all refs matching the test branch prefix
+        const { data } = await octokit.rest.git.listMatchingRefs({
+            owner,
+            repo,
+            ref: `heads/${prefix}/pr-`,
+        });
+        for (const ref of data) {
+            // Extract PR number from ref name (e.g., "merge-test/pr-123")
+            const match = ref.ref.match(/\/pr-(\d+)$/);
+            if (!match)
+                continue;
+            const prNumber = parseInt(match[1], 10);
+            if (!openPrNumbers.has(prNumber)) {
+                core.info(`Cleaning up stale test branch: ${ref.ref}`);
+                await deleteTestBranch(octokit, owner, repo, ref.ref.replace("refs/heads/", ""));
+                cleaned++;
+            }
+        }
+    }
+    catch (error) {
+        core.warning(`Failed to cleanup test branches: ${error}`);
+    }
+    return cleaned;
 }
 
 

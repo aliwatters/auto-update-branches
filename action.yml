@@ -27,8 +27,9 @@ inputs:
   update-mode:
     description: |
       How many PRs to update per run. Options:
-        all  - Update all eligible PRs (may cause CI stampede)
-        next - Update only the next PR to merge (sequential, CI-efficient)
+        all          - Update all eligible PRs (may cause CI stampede)
+        next         - Update only the next PR to merge (sequential, CI-efficient)
+        test-branch  - Create merge-test branches instead of modifying PR branches
     required: false
     default: "all"
   cancel-stale-ci:
@@ -67,6 +68,14 @@ inputs:
     description: "Path to repo config file for label mappings and settings (requires checkout step)"
     required: false
     default: ".github/auto-update.yml"
+  test-branch-prefix:
+    description: "Branch prefix for test-branch mode (default: merge-test)"
+    required: false
+    default: "merge-test"
+  status-context:
+    description: "Commit status context name for test-branch mode (default: merge-test)"
+    required: false
+    default: "merge-test"
 
 outputs:
   updated:
