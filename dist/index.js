@@ -34493,17 +34493,37 @@ git push --force-with-lease
     }
 }
 /**
- * Get the merge state of a PR.
+ * Get the merge state of a PR, retrying when UNKNOWN.
+ *
+ * GitHub computes mergeable_state asynchronously. When the action triggers
+ * immediately after a merge to main, the state may be UNKNOWN for several
+ * seconds. We retry with exponential backoff to avoid skipping PRs that
+ * are actually BEHIND.
+ *
+ * @see https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request
  */
 async function getMergeState(octokit, owner, repo, prNumber) {
-    const { data } = await octokit.rest.pulls.get({
-        owner,
-        repo,
-        pull_number: prNumber,
-    });
-    // GitHub returns mergeable_state but we need mergeStateStatus equivalent
-    // mergeable_state values: "behind", "clean", "dirty", "blocked", "unknown", "unstable", "has_hooks"
-    return (data.mergeable_state?.toUpperCase() ?? "UNKNOWN");
+    const maxRetries = 3;
+    const baseDelayMs = 3000;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const { data } = await octokit.rest.pulls.get({
+            owner,
+            repo,
+            pull_number: prNumber,
+        });
+        // mergeable_state values: "behind", "clean", "dirty", "blocked", "unknown", "unstable", "has_hooks"
+        const state = (data.mergeable_state?.toUpperCase() ?? "UNKNOWN");
+        if (state !== "UNKNOWN" || attempt === maxRetries) {
+            if (state === "UNKNOWN" && attempt === maxRetries) {
+                core.warning(`PR #${prNumber}: mergeable_state still UNKNOWN after ${maxRetries} retries`);
+            }
+            return state;
+        }
+        const delayMs = baseDelayMs * Math.pow(2, attempt);
+        core.info(`PR #${prNumber}: mergeable_state is UNKNOWN, retrying in ${delayMs / 1000}s (attempt ${attempt + 1}/${maxRetries})...`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    return "UNKNOWN";
 }
 /**
  * Update a single PR branch by merging the base branch into it.
