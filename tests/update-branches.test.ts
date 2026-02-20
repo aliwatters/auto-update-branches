@@ -15,7 +15,7 @@ vi.mock("@actions/core", () => ({
 }));
 
 // Import after mocks
-import { writeSummary } from "../src/update-branches";
+import { updateBranches, writeSummary } from "../src/update-branches";
 import * as core from "@actions/core";
 
 const defaultInputs: ActionInputs = {
@@ -121,5 +121,108 @@ describe("writeSummary", () => {
 
     const addRawCall = vi.mocked(core.summary.addRaw).mock.calls[0][0];
     expect(addRawCall).not.toContain("Priority Order");
+  });
+});
+
+describe("updateBranches", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  const makeOctokit = (getMergeStates: string[], updateResult = "updated") => {
+    let pullsGetCalls = 0;
+    return {
+      rest: {
+        pulls: {
+          get: vi.fn().mockImplementation(() => {
+            const state = getMergeStates[pullsGetCalls] ?? getMergeStates[getMergeStates.length - 1];
+            pullsGetCalls++;
+            return Promise.resolve({ data: { mergeable_state: state } });
+          }),
+          updateBranch: vi.fn().mockResolvedValue({}),
+        },
+        issues: {
+          addLabels: vi.fn().mockResolvedValue({}),
+          createComment: vi.fn().mockResolvedValue({}),
+        },
+        actions: {
+          listWorkflowRuns: vi.fn().mockResolvedValue({ data: { workflow_runs: [] } }),
+          listWorkflowRunsForRepo: vi.fn().mockResolvedValue({ data: { workflow_runs: [] } }),
+          cancelWorkflowRun: vi.fn().mockResolvedValue({}),
+        },
+      },
+    } as any;
+  };
+
+  it("skips PR when merge state is CLEAN", async () => {
+    const octokit = makeOctokit(["clean"]);
+    const prs = [makePrioritizedPR(1, 0)];
+
+    const result = await updateBranches(octokit, "owner", "repo", prs, defaultInputs);
+
+    expect(result.skipped).toBe(1);
+    expect(result.updated).toBe(0);
+    expect(octokit.rest.pulls.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("updates PR when merge state is BEHIND", async () => {
+    const octokit = makeOctokit(["behind"]);
+    const prs = [makePrioritizedPR(1, 0)];
+
+    const result = await updateBranches(octokit, "owner", "repo", prs, defaultInputs);
+
+    expect(result.updated).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries when merge state is UNKNOWN then resolves to BEHIND", async () => {
+    const octokit = makeOctokit(["unknown", "behind"]);
+    const prs = [makePrioritizedPR(1, 0)];
+
+    const promise = updateBranches(octokit, "owner", "repo", prs, defaultInputs);
+    // Advance past the retry delay
+    await vi.advanceTimersByTimeAsync(5000);
+
+    const result = await promise;
+
+    expect(result.updated).toBe(1);
+    expect(octokit.rest.pulls.get).toHaveBeenCalledTimes(2);
+    expect(core.info).toHaveBeenCalledWith(
+      expect.stringContaining("UNKNOWN, retrying")
+    );
+  });
+
+  it("retries multiple times when merge state stays UNKNOWN", async () => {
+    const octokit = makeOctokit(["unknown", "unknown", "unknown", "behind"]);
+    const prs = [makePrioritizedPR(1, 0)];
+
+    const promise = updateBranches(octokit, "owner", "repo", prs, defaultInputs);
+    // Advance past all retry delays (3s + 6s + 12s)
+    await vi.advanceTimersByTimeAsync(25000);
+
+    const result = await promise;
+
+    expect(result.updated).toBe(1);
+    expect(octokit.rest.pulls.get).toHaveBeenCalledTimes(4);
+  });
+
+  it("gives up after max retries and skips PR", async () => {
+    // All 4 calls return unknown (1 initial + 3 retries)
+    const octokit = makeOctokit(["unknown", "unknown", "unknown", "unknown"]);
+    const prs = [makePrioritizedPR(1, 0)];
+
+    const promise = updateBranches(octokit, "owner", "repo", prs, defaultInputs);
+    await vi.advanceTimersByTimeAsync(30000);
+
+    const result = await promise;
+
+    expect(result.skipped).toBe(1);
+    expect(result.updated).toBe(0);
+    expect(octokit.rest.pulls.get).toHaveBeenCalledTimes(4);
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining("still UNKNOWN after 3 retries")
+    );
   });
 });
