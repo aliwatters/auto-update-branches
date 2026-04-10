@@ -34944,6 +34944,7 @@ async function updateBranches(octokit, owner, repo, prs, inputs) {
         core.startGroup(`PR #${pr.number} (priority=${pr.priority})`);
         const mergeState = await getMergeState(octokit, owner, repo, pr.number);
         core.info(`Merge state: ${mergeState}`);
+        const stateWasIndeterminate = mergeState === "UNKNOWN";
         // CLEAN: definitely up to date, skip
         if (mergeState === "CLEAN") {
             core.info("Branch is up to date");
@@ -34981,6 +34982,8 @@ async function updateBranches(octokit, owner, repo, prs, inputs) {
         }
         // Update the branch
         const outcome = await updatePRBranch(octokit, owner, repo, pr.number, pr.sha);
+        // Track whether this PR was definitively handled (for next mode logic)
+        let definitive = true;
         switch (outcome) {
             case "updated":
                 core.info("Branch updated successfully");
@@ -34992,22 +34995,40 @@ async function updateBranches(octokit, owner, repo, prs, inputs) {
                 await handleConflict(octokit, owner, repo, pr.number, inputs);
                 break;
             case "up_to_date":
-                core.info("Branch is already up to date");
-                result.skipped++;
+                if (stateWasIndeterminate) {
+                    // GitHub may report "up to date" when mergeStateStatus was UNKNOWN
+                    // because it hasn't finished computing. Don't trust this result —
+                    // in next mode, continue to the next PR instead of bailing.
+                    core.info("Branch reported up to date, but merge state was UNKNOWN — result is unreliable");
+                    result.skipped++;
+                    definitive = false;
+                }
+                else {
+                    core.info("Branch is already up to date");
+                    result.skipped++;
+                }
                 break;
             case "sha_mismatch":
                 core.info("Branch changed during update (SHA mismatch). Will retry on next push.");
                 result.skipped++;
+                definitive = false;
                 break;
             case "error":
                 core.warning(`Update failed for PR #${pr.number}`);
                 result.errors++;
+                definitive = false;
                 break;
         }
         core.endGroup();
         if (inputs.updateMode === "next") {
-            core.info("Mode=next, processed one PR. Done.");
-            break;
+            if (definitive) {
+                core.info("Mode=next, processed one PR. Done.");
+                break;
+            }
+            else {
+                core.info("Mode=next, but result was indeterminate. Continuing to next PR...");
+                // Don't break — try the next PR
+            }
         }
     }
     return result;
