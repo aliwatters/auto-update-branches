@@ -332,6 +332,76 @@ describe("updateBranches", () => {
     expect(octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
   });
 
+  it("in next mode, continues to next PR when UNKNOWN state yields up_to_date", async () => {
+    // First PR: UNKNOWN after all retries, updateBranch returns "up to date"
+    // Second PR: BEHIND, updateBranch succeeds
+    // The action should NOT bail after the first PR
+    let pullsGetCallCount = 0;
+    const octokit = {
+      rest: {
+        pulls: {
+          get: vi.fn().mockImplementation(({ pull_number }: { pull_number: number }) => {
+            pullsGetCallCount++;
+            if (pull_number === 1) {
+              return Promise.resolve({ data: { mergeable_state: "unknown" } });
+            }
+            return Promise.resolve({ data: { mergeable_state: "behind" } });
+          }),
+          updateBranch: vi.fn().mockImplementation(({ pull_number }: { pull_number: number }) => {
+            if (pull_number === 1) {
+              return Promise.reject({ status: 422, message: "merge commit is already up to date" });
+            }
+            return Promise.resolve({});
+          }),
+        },
+        issues: {
+          addLabels: vi.fn().mockResolvedValue({}),
+          createComment: vi.fn().mockResolvedValue({}),
+        },
+        actions: {
+          listWorkflowRuns: vi.fn().mockResolvedValue({ data: { workflow_runs: [] } }),
+          listWorkflowRunsForRepo: vi.fn().mockResolvedValue({ data: { workflow_runs: [] } }),
+          cancelWorkflowRun: vi.fn().mockResolvedValue({}),
+        },
+      },
+    } as any;
+
+    const prs = [makePrioritizedPR(1, 0), makePrioritizedPR(2, 0)];
+    const inputs = { ...defaultInputs, updateMode: "next" as const };
+
+    const promise = updateBranches(octokit, "owner", "repo", prs, inputs);
+    // Advance past all retry delays for PR #1 (3s + 6s + 12s)
+    await vi.advanceTimersByTimeAsync(30000);
+
+    const result = await promise;
+
+    // PR #1 was skipped (indeterminate), PR #2 was updated
+    expect(result.skipped).toBe(1);
+    expect(result.updated).toBe(1);
+    // PR #1: 4 get calls (1 initial + 3 retries) + PR #2: 1 get call = 5
+    expect(octokit.rest.pulls.get).toHaveBeenCalledTimes(5);
+    // Both PRs had updateBranch called
+    expect(octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(2);
+  });
+
+  it("in next mode, stops after definitive up_to_date (non-UNKNOWN state)", async () => {
+    // First PR: BLOCKED state, updateBranch returns "up to date" — definitive
+    const octokit = makeOctokit(["blocked"]);
+    octokit.rest.pulls.updateBranch.mockRejectedValue({
+      status: 422,
+      message: "merge commit is already up to date",
+    });
+    const prs = [makePrioritizedPR(1, 0), makePrioritizedPR(2, 0)];
+    const inputs = { ...defaultInputs, updateMode: "next" as const };
+
+    const result = await updateBranches(octokit, "owner", "repo", prs, inputs);
+
+    expect(result.skipped).toBe(1);
+    expect(result.updated).toBe(0);
+    // Should stop after first PR (definitive result)
+    expect(octokit.rest.pulls.updateBranch).toHaveBeenCalledTimes(1);
+  });
+
   it("respects max-updates limit", async () => {
     const octokit = makeOctokit(["behind"]);
     const prs = [makePrioritizedPR(1, 0), makePrioritizedPR(2, 0), makePrioritizedPR(3, 0)];
