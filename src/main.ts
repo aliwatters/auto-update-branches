@@ -5,6 +5,7 @@ import { transformPRs } from "./filter";
 import { filterPRs } from "./filter";
 import { buildPriorityMap, prioritizeAndSort } from "./priority";
 import { updateBranches, writeSummary } from "./update-branches";
+import { processTestBranches, cleanupTestBranches } from "./test-branch";
 
 function getInputs(): ActionInputs {
   const excludeStr = core.getInput("exclude-labels");
@@ -24,6 +25,8 @@ function getInputs(): ActionInputs {
     maxUpdates: parseInt(core.getInput("max-updates"), 10) || 0,
     priorityLabels: core.getInput("priority-labels"),
     configFile: core.getInput("config-file"),
+    testBranchPrefix: core.getInput("test-branch-prefix") || "merge-test",
+    statusContext: core.getInput("status-context") || "merge-test",
   };
 }
 
@@ -87,8 +90,22 @@ async function run(): Promise<void> {
 
     core.endGroup();
 
-    // Update branches
-    const result = await updateBranches(octokit, owner, repo, sorted, inputs);
+    // Process PRs based on mode
+    let result;
+    if (inputs.updateMode === "test-branch") {
+      result = await processTestBranches(octokit, owner, repo, sorted, inputs);
+
+      // Clean up test branches for closed/merged PRs
+      const openPrNumbers = new Set(sorted.map((pr) => pr.number));
+      const cleaned = await cleanupTestBranches(
+        octokit, owner, repo, openPrNumbers, inputs.testBranchPrefix
+      );
+      if (cleaned > 0) {
+        core.info(`Cleaned up ${cleaned} stale test branch(es)`);
+      }
+    } else {
+      result = await updateBranches(octokit, owner, repo, sorted, inputs);
+    }
 
     // Summary
     writeSummary(result, sorted);

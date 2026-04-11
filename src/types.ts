@@ -15,7 +15,7 @@ export interface ActionInputs {
   token: string;
   filter: "all" | "auto-merge" | "label" | "auto-merge+label";
   label: string;
-  updateMode: "all" | "next";
+  updateMode: "all" | "next" | "test-branch";
   cancelStaleCi: boolean;
   ciWorkflow: string;
   conflictLabel: string;
@@ -24,6 +24,8 @@ export interface ActionInputs {
   maxUpdates: number;
   priorityLabels: string;
   configFile: string;
+  testBranchPrefix: string;
+  statusContext: string;
 }
 
 export interface PriorityMap {
