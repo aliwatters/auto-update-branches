@@ -181,9 +181,14 @@ async function updatePRBranch(
       if (/merge conflict/i.test(message)) {
         return "conflict";
       }
-      if (/already up.to.date/i.test(message) || /no update/i.test(message)) {
+      if (
+        /already up.to.date/i.test(message) ||
+        /no update/i.test(message) ||
+        /no new commits/i.test(message)
+      ) {
         return "up_to_date";
       }
+      core.warning(`Unhandled 422 for PR #${prNumber}: ${message}`);
       return "error";
     }
 
