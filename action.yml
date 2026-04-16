@@ -92,5 +92,5 @@ outputs:
     value: ${{ steps.update.outputs.summary }}
 
 runs:
-  using: "node20"
+  using: "node24"
   main: "dist/index.js"
