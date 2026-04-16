@@ -34950,13 +34950,9 @@ async function updateBranches(octokit, owner, repo, prs, inputs) {
         const stateWasIndeterminate = mergeState === "UNKNOWN";
         // CLEAN: definitely up to date, skip
         if (mergeState === "CLEAN") {
-            core.info("Branch is up to date");
+            core.info("Branch is up to date, skipping");
             result.skipped++;
             core.endGroup();
-            if (inputs.updateMode === "next") {
-                core.info("Mode=next and top PR is current. Done.");
-                break;
-            }
             continue;
         }
         // DIRTY: has merge conflicts — label and notify, don't attempt update
@@ -34998,18 +34994,9 @@ async function updateBranches(octokit, owner, repo, prs, inputs) {
                 await handleConflict(octokit, owner, repo, pr.number, inputs);
                 break;
             case "up_to_date":
-                if (stateWasIndeterminate) {
-                    // GitHub may report "up to date" when mergeStateStatus was UNKNOWN
-                    // because it hasn't finished computing. Don't trust this result —
-                    // in next mode, continue to the next PR instead of bailing.
-                    core.info("Branch reported up to date, but merge state was UNKNOWN — result is unreliable");
-                    result.skipped++;
-                    definitive = false;
-                }
-                else {
-                    core.info("Branch is already up to date");
-                    result.skipped++;
-                }
+                core.info("Branch is already up to date");
+                result.skipped++;
+                definitive = false; // No work done — don't count as "processed" in next mode
                 break;
             case "sha_mismatch":
                 core.info("Branch changed during update (SHA mismatch). Will retry on next push.");
